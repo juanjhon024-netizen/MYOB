@@ -37,16 +37,20 @@ import {
   deleteMediaById,
   exportContentBackup,
   formatBytes,
-  getMediaById,
   importContentBackup,
+  resolveMediaSource,
   saveCustomEpisode,
   saveMediaFile
 } from '../services/contentDb';
 import {
-  getTeacherPin,
-  setTeacherPin,
-  triggerFileDownload
+  triggerFileDownload,
+  updateTeacherPinRemote,
+  verifyTeacherPinRemote
 } from '../services/storage';
+import {
+  getActiveTeacherPinSession,
+  setActiveTeacherPinSession
+} from '../services/api';
 
 interface ContentManagerPageProps {
   modules: ModuleData[];
@@ -79,10 +83,13 @@ export function ContentManagerPage({
   modules,
   onContentChanged
 }: ContentManagerPageProps) {
-  // Teacher Local PIN Gate
-  const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
+  // Teacher Server PIN Gate
+  const [isUnlocked, setIsUnlocked] = useState<boolean>(() =>
+    Boolean(getActiveTeacherPinSession())
+  );
   const [pinInput, setPinInput] = useState<string>('');
   const [pinError, setPinError] = useState<string>('');
+  const [isVerifyingPin, setIsVerifyingPin] = useState<boolean>(false);
   const [newPinInput, setNewPinInput] = useState<string>('');
   const [showPinEditor, setShowPinEditor] = useState<boolean>(false);
   const [teacherSection, setTeacherSection] = useState<
@@ -198,10 +205,10 @@ export function ContentManagerPage({
 
     async function loadSavedMedia() {
       if (draft?.pdfAttachmentId) {
-        const rec = await getMediaById(draft.pdfAttachmentId);
+        const rec = await resolveMediaSource(draft.pdfAttachmentId);
         if (rec && active) {
-          pdfObj = URL.createObjectURL(rec.blob);
-          setSavedPdfUrl(pdfObj);
+          if (rec.isObjectUrl) pdfObj = rec.url;
+          setSavedPdfUrl(rec.url);
         } else if (active) {
           setSavedPdfUrl(null);
         }
@@ -210,10 +217,10 @@ export function ContentManagerPage({
       }
 
       if (draft?.videoAttachmentId) {
-        const rec = await getMediaById(draft.videoAttachmentId);
+        const rec = await resolveMediaSource(draft.videoAttachmentId);
         if (rec && active) {
-          vidObj = URL.createObjectURL(rec.blob);
-          setSavedVideoUrl(vidObj);
+          if (rec.isObjectUrl) vidObj = rec.url;
+          setSavedVideoUrl(rec.url);
         } else if (active) {
           setSavedVideoUrl(null);
         }
@@ -250,18 +257,26 @@ export function ContentManagerPage({
     return () => URL.revokeObjectURL(url);
   }, [pendingVideoFile]);
 
-  const handleUnlockTeacherMode = (e: React.FormEvent) => {
+  const handleUnlockTeacherMode = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (pinInput.trim() === getTeacherPin()) {
-      setIsUnlocked(true);
-      setPinError('');
-      setPinInput('');
-    } else {
-      setPinError('PIN Guru tidak sesuai. Periksa kembali PIN lokal Anda.');
+    if (!pinInput.trim()) return;
+    setIsVerifyingPin(true);
+    setPinError('');
+    try {
+      const ok = await verifyTeacherPinRemote(pinInput.trim());
+      if (ok) {
+        setIsUnlocked(true);
+        setPinError('');
+        setPinInput('');
+      } else {
+        setPinError('PIN Guru tidak sesuai. Periksa kembali PIN akses Mode Guru.');
+      }
+    } finally {
+      setIsVerifyingPin(false);
     }
   };
 
-  const handleChangePin = (e: React.FormEvent) => {
+  const handleChangePin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (newPinInput.trim().length < 4) {
       setStatusBanner({
@@ -270,13 +285,23 @@ export function ContentManagerPage({
       });
       return;
     }
-    setTeacherPin(newPinInput.trim());
-    setNewPinInput('');
-    setShowPinEditor(false);
-    setStatusBanner({
-      type: 'success',
-      text: 'PIN akses Mode Guru berhasil diperbarui di browser perangkat ini.'
-    });
+    try {
+      await updateTeacherPinRemote(newPinInput.trim());
+      setNewPinInput('');
+      setShowPinEditor(false);
+      setStatusBanner({
+        type: 'success',
+        text: 'PIN akses Mode Guru berhasil diperbarui di server untuk semua perangkat guru.'
+      });
+    } catch (err) {
+      setStatusBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Gagal memperbarui PIN Guru di server.'
+      });
+    }
   };
 
   const handleCreateNewEpisode = () => {
@@ -306,7 +331,7 @@ export function ContentManagerPage({
     setPendingVideoFile(null);
     setStatusBanner({
       type: 'warning',
-      text: 'Draf episode baru dibuat. Lengkapi konten lalu klik "Simpan ke IndexedDB".'
+      text: 'Draf episode baru dibuat. Lengkapi konten lalu klik "Simpan ke Server".'
     });
   };
 
@@ -420,7 +445,7 @@ export function ContentManagerPage({
     setStepHint3('');
     setStatusBanner({
       type: 'warning',
-      text: 'Tahap Simulasi Terpandu ditambahkan ke draf. Klik "Simpan ke IndexedDB" untuk menerapkannya.'
+      text: 'Tahap Simulasi Terpandu ditambahkan ke draf. Klik "Simpan ke Server" untuk menerapkannya ke seluruh siswa.'
     });
   };
 
@@ -507,7 +532,7 @@ export function ContentManagerPage({
     }));
     setStatusBanner({
       type: 'warning',
-      text: 'Template contoh Simulasi Terpandu berhasil dimuat. Sesuaikan langkah dan kunci jawaban lalu klik "Simpan ke IndexedDB".'
+      text: 'Template contoh Simulasi Terpandu berhasil dimuat. Sesuaikan langkah dan kunci jawaban lalu klik "Simpan ke Server".'
     });
   };
 
@@ -520,13 +545,10 @@ export function ContentManagerPage({
       return;
     }
 
-    const quota = await checkStorageQuota();
-    if (quota && quota.availableBytes < file.size + 512 * 1024) {
+    if (file.size > 250 * 1024 * 1024) {
       setStatusBanner({
         type: 'error',
-        text: `Kapasitas penyimpanan browser tidak mencukupi untuk PDF (${formatBytes(
-          file.size
-        )}). Tersisa ${formatBytes(quota.availableBytes)}.`
+        text: `Ukuran file PDF (${formatBytes(file.size)}) melebihi batas unggahan server 250 MB.`
       });
       return;
     }
@@ -534,7 +556,7 @@ export function ContentManagerPage({
     setPendingPdfFile(file);
     setStatusBanner({
       type: 'warning',
-      text: `PDF "${file.name}" siap dipratinjau. Klik "Simpan ke IndexedDB" untuk menyimpan.`
+      text: `PDF "${file.name}" siap dipratinjau. Klik "Simpan ke Server" untuk mengunggah.`
     });
   };
 
@@ -546,13 +568,10 @@ export function ContentManagerPage({
       return;
     }
 
-    const quota = await checkStorageQuota();
-    if (quota && quota.availableBytes < file.size + 1024 * 1024) {
+    if (file.size > 250 * 1024 * 1024) {
       setStatusBanner({
         type: 'error',
-        text: `Kapasitas penyimpanan browser tidak mencukupi untuk video MP4 (${formatBytes(
-          file.size
-        )}). Tersisa ${formatBytes(quota.availableBytes)}.`
+        text: `Ukuran video MP4 (${formatBytes(file.size)}) melebihi batas unggahan server 250 MB.`
       });
       return;
     }
@@ -562,7 +581,7 @@ export function ContentManagerPage({
       type: 'warning',
       text: `Video "${file.name}" (${formatBytes(
         file.size
-      )}) dimuat untuk preview. Klik "Simpan ke IndexedDB" untuk menyimpan.`
+      )}) dimuat untuk preview. Klik "Simpan ke Server" untuk mengunggah.`
     });
   };
 
@@ -601,7 +620,7 @@ export function ContentManagerPage({
     setMatWarning('');
     setStatusBanner({
       type: 'warning',
-      text: 'Bagian materi diperbarui di draf. Klik "Simpan ke IndexedDB" untuk menyimpan.'
+      text: 'Bagian materi diperbarui di draf. Klik "Simpan ke Server" untuk menerbitkan ke siswa.'
     });
   };
 
@@ -668,7 +687,7 @@ export function ContentManagerPage({
     setQExplanation('');
     setStatusBanner({
       type: 'warning',
-      text: 'Soal pilihan ganda diperbarui di draf. Klik "Simpan ke IndexedDB" untuk menyimpan.'
+      text: 'Soal pilihan ganda diperbarui di draf. Klik "Simpan ke Server" untuk menyimpan.'
     });
   };
 
@@ -792,7 +811,7 @@ export function ContentManagerPage({
 
       setStatusBanner({
         type: 'success',
-        text: `Episode ${updatedEp.code} — "${updatedEp.title}" beserta materi & Simulasi Terpandu berhasil disimpan ke IndexedDB.`
+        text: `Episode ${updatedEp.code} — "${updatedEp.title}" beserta materi & Simulasi Terpandu berhasil disimpan ke Server Online.`
       });
     } catch (err) {
       setStatusBanner({
@@ -800,7 +819,7 @@ export function ContentManagerPage({
         text:
           err instanceof Error
             ? err.message
-            : 'Terjadi kesalahan saat menyimpan ke IndexedDB.'
+            : 'Terjadi kesalahan saat menyimpan ke server.'
       });
     } finally {
       setIsSaving(false);
@@ -810,7 +829,7 @@ export function ContentManagerPage({
   const requestRemovePdf = () => {
     setConfirmAction({
       title: 'Hapus Lampiran PDF?',
-      message: 'Dokumen PDF pada episode ini akan dihapus dari IndexedDB.',
+      message: 'Dokumen PDF pada episode ini akan dihapus dari server.',
       onConfirm: async () => {
         if (!draft) return;
         if (draft.pdfAttachmentId) {
@@ -834,7 +853,7 @@ export function ContentManagerPage({
   const requestRemoveVideo = () => {
     setConfirmAction({
       title: 'Hapus Video MP4 Unggahan?',
-      message: 'File video MP4 unggahan lokal akan dihapus dari IndexedDB.',
+      message: 'File video MP4 pada episode ini akan dihapus dari server.',
       onConfirm: async () => {
         if (!draft) return;
         if (draft.videoAttachmentId) {
@@ -860,8 +879,8 @@ export function ContentManagerPage({
     setConfirmAction({
       title: `Hapus Konten Episode ${draft.code}?`,
       message: draft.isCustom
-        ? 'Episode tambahan ini beserta lampiran medianya akan dihapus permanen dari IndexedDB.'
-        : 'Perubahan lokal pada episode bawaan ini akan dihapus dan dikembalikan ke konten bawaan awal.',
+        ? 'Episode tambahan ini beserta lampiran medianya akan dihapus permanen dari server.'
+        : 'Perubahan khusus guru pada episode bawaan ini akan dihapus dan dikembalikan ke konten bawaan awal.',
       onConfirm: async () => {
         if (draft.pdfAttachmentId) {
           await deleteMediaById(draft.pdfAttachmentId).catch(() => undefined);
@@ -877,7 +896,7 @@ export function ContentManagerPage({
         setSelectedEpisodeId('ep-1-1');
         setStatusBanner({
           type: 'success',
-          text: 'Konten lokal episode berhasil dihapus.'
+          text: 'Konten episode di server berhasil dihapus/direset.'
         });
       }
     });
@@ -893,7 +912,7 @@ export function ContentManagerPage({
       );
       setStatusBanner({
         type: 'success',
-        text: `Cadangan berhasil diekspor (${payload.episodes.length} episode dan ${payload.media.length} file media).`
+        text: `Cadangan server berhasil diekspor (${payload.episodes.length} episode dan ${payload.media.length} file media).`
       });
     } catch (err) {
       setStatusBanner({
@@ -917,7 +936,7 @@ export function ContentManagerPage({
       await refreshQuota();
       setStatusBanner({
         type: 'success',
-        text: `Impor berhasil: ${res.episodesImported} episode dan ${res.mediaImported} file pendukung dipulihkan ke IndexedDB.`
+        text: `Impor berhasil: ${res.episodesImported} episode dan ${res.mediaImported} file pendukung dipulihkan ke Server Online.`
       });
     } catch (err) {
       setStatusBanner({
@@ -925,7 +944,7 @@ export function ContentManagerPage({
         text:
           err instanceof Error
             ? err.message
-            : 'File cadangan tidak valid atau kapasitas penyimpanan tidak mencukupi.'
+            : 'File cadangan tidak valid atau gagal diunggah ke server.'
       });
     } finally {
       e.target.value = '';
@@ -983,22 +1002,23 @@ export function ContentManagerPage({
 
             <button
               type="submit"
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#14263D] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#1e3859]"
+              disabled={isVerifyingPin}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#14263D] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#1e3859] disabled:opacity-60"
             >
               <Unlock className="h-4 w-4" />
-              <span>Buka Mode Guru</span>
+              <span>{isVerifyingPin ? 'Memverifikasi...' : 'Buka Mode Guru'}</span>
             </button>
           </form>
 
           <div className="mt-6 rounded-lg border border-slate-200 bg-[#F4F7FB] p-3.5 text-xs text-slate-600 space-y-1">
             <p>
-              <strong>PIN Bawaan Lokal:</strong>{' '}
+              <strong>PIN Bawaan Awal:</strong>{' '}
               <span className="font-mono font-bold text-[#14263D]">1818</span> (dapat diubah
               setelah masuk ke Mode Guru).
             </p>
             <p>
-              Catatan: Kunci PIN ini bersifat pengaman antarmuka lokal di browser komputer sekolah
-              (bukan autentikasi server online).
+              Verifikasi PIN dilakukan pada server Smart-Guide sehingga guru dapat mengakses panel
+              ini dari perangkat mana saja.
             </p>
           </div>
         </div>
@@ -1057,7 +1077,10 @@ export function ContentManagerPage({
 
             <button
               type="button"
-              onClick={() => setIsUnlocked(false)}
+              onClick={() => {
+                setActiveTeacherPinSession('');
+                setIsUnlocked(false);
+              }}
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
             >
               <Lock className="h-3.5 w-3.5" />
@@ -1093,13 +1116,13 @@ export function ContentManagerPage({
         )}
 
         <div className="mt-5 grid grid-cols-1 gap-4 border-t border-slate-200 pt-5 lg:grid-cols-12">
-          <div className="flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50/70 p-3.5 text-xs text-amber-950 lg:col-span-8">
-            <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+          <div className="flex items-start gap-2.5 rounded-lg border border-[#3569B0]/30 bg-[#EAF3FF] p-3.5 text-xs text-[#14263D] lg:col-span-8">
+            <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#3569B0]" />
             <p>
-              <strong>Penyimpanan Lokal IndexedDB:</strong> Materi, Simulasi Terpandu, PDF, dan
-              video hanya tersimpan pada browser perangkat ini (tanpa server online). Gunakan{' '}
-              <strong>Ekspor Cadangan (.json)</strong> lalu <strong>Impor Cadangan</strong> untuk
-              mendistribusikan konten ke komputer siswa di lab sekolah.
+              <strong>Server Online Terpusat:</strong> Materi, Simulasi Terpandu, PDF, dan video
+              yang disimpan di sini langsung tersedia bagi seluruh siswa di perangkatnya
+              masing-masing. Fitur <strong>Ekspor Cadangan (.json)</strong> tetap tersedia untuk
+              arsip materi guru.
             </p>
           </div>
 
@@ -1347,7 +1370,7 @@ export function ContentManagerPage({
                   >
                     <Save className="h-3.5 w-3.5" />
                     <span>
-                      {isSaving ? 'Menyimpan...' : 'Simpan ke IndexedDB'}
+                      {isSaving ? 'Menyimpan...' : 'Simpan ke Server'}
                     </span>
                   </button>
                 </div>
@@ -1907,7 +1930,7 @@ export function ContentManagerPage({
                           Unggah Modul / Lembar Kerja PDF
                         </p>
                         <p className="mt-1 text-xs text-slate-600">
-                          File PDF dipratinjau di bawah sebelum disimpan ke IndexedDB.
+                          File PDF dipratinjau di bawah sebelum diunggah ke server Smart-Guide.
                         </p>
                       </div>
                       <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-[#3569B0] px-4 py-2 text-xs font-semibold text-white hover:bg-[#2a548e]">
@@ -1965,7 +1988,7 @@ export function ContentManagerPage({
                           Unggah Video Tutorial MP4
                         </p>
                         <p className="mt-1 text-xs text-slate-600">
-                          Disimpan di IndexedDB browser lokal.
+                          Disimpan di server Smart-Guide agar dapat diputar siswa dari perangkat masing-masing.
                         </p>
                       </div>
                       <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-[#3569B0] px-4 py-2 text-xs font-semibold text-white hover:bg-[#2a548e]">
@@ -2167,7 +2190,7 @@ export function ContentManagerPage({
                         </p>
                         <p className="text-xs text-slate-700">
                           Periksa ringkasan materi, Simulasi Terpandu, lampiran, dan soal sebelum
-                          menyimpan ke IndexedDB.
+                          menyimpan ke server Smart-Guide.
                         </p>
                       </div>
                       <button

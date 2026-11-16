@@ -1114,7 +1114,7 @@ export function VirtualLabPanel({
                     Hasil Praktik &amp; Checkpoint Telah Dikirim
                   </h3>
                   <p className="mt-1 text-xs leading-relaxed text-emerald-900">
-                    Data entri simulasi Anda telah tersimpan di perangkat ini. Penilaian detail dan
+                    Data entri simulasi Anda telah tersimpan ke server. Penilaian detail dan
                     otomatis (ketepatan setiap kolom, jumlah kesalahan, dan penggunaan hint) hanya
                     dapat diakses oleh guru melalui menu <strong>Mode Guru</strong>.
                   </p>

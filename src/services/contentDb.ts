@@ -3,6 +3,17 @@ import {
   EpisodeContent,
   StoredMediaRecord
 } from '../types/lms';
+import {
+  apiDeleteCustomEpisode,
+  apiDeleteMedia,
+  apiExportContentBackup,
+  apiGetCustomEpisodes,
+  apiGetMediaMeta,
+  apiImportContentBackup,
+  apiSaveCustomEpisode,
+  apiUploadMediaFile,
+  getServerMediaUrl
+} from './api';
 
 const DB_NAME = 'myob_smartguide_content_db';
 const DB_VERSION = 1;
@@ -34,52 +45,65 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-export async function getAllCustomEpisodes(): Promise<EpisodeContent[]> {
+async function getAllLocalEpisodes(): Promise<EpisodeContent[]> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_EPISODES, 'readonly');
     const store = tx.objectStore(STORE_EPISODES);
     const req = store.getAll();
     req.onsuccess = () => resolve((req.result as EpisodeContent[]) || []);
-    req.onerror = () => reject(req.error || new Error('Gagal membaca data episode.'));
+    req.onerror = () =>
+      reject(req.error || new Error('Gagal membaca data episode lokal.'));
   });
 }
 
-export async function saveCustomEpisode(episode: EpisodeContent): Promise<void> {
+async function putLocalEpisode(episode: EpisodeContent): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_EPISODES, 'readwrite');
     const store = tx.objectStore(STORE_EPISODES);
-    const payload: EpisodeContent = {
-      ...episode,
-      updatedAt: new Date().toISOString()
-    };
-    const req = store.put(payload);
+    const req = store.put(episode);
     req.onsuccess = () => resolve();
-    req.onerror = () => {
-      const err = req.error;
-      if (err && err.name === 'QuotaExceededError') {
-        reject(
-          new Error(
-            'Kapasitas penyimpanan browser penuh. Hapus file media besar atau cadangkan data terlebih dahulu.'
-          )
-        );
-      } else {
-        reject(err || new Error('Gagal menyimpan episode ke IndexedDB.'));
-      }
-    };
+    req.onerror = () => reject(req.error || new Error('Gagal menyimpan cache episode.'));
   });
 }
 
-export async function deleteCustomEpisode(episodeId: string): Promise<void> {
+async function deleteLocalEpisode(episodeId: string): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_EPISODES, 'readwrite');
     const store = tx.objectStore(STORE_EPISODES);
     const req = store.delete(episodeId);
     req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error || new Error('Gagal menghapus episode.'));
+    req.onerror = () => reject(req.error || new Error('Gagal menghapus cache episode.'));
   });
+}
+
+export async function getAllCustomEpisodes(): Promise<EpisodeContent[]> {
+  try {
+    const remote = await apiGetCustomEpisodes();
+    // Mirror latest server episodes to IndexedDB in background
+    Promise.all(remote.map((ep) => putLocalEpisode(ep).catch(() => undefined))).catch(
+      () => undefined
+    );
+    return remote;
+  } catch {
+    return getAllLocalEpisodes().catch(() => []);
+  }
+}
+
+export async function saveCustomEpisode(episode: EpisodeContent): Promise<void> {
+  const payload: EpisodeContent = {
+    ...episode,
+    updatedAt: new Date().toISOString()
+  };
+  await apiSaveCustomEpisode(payload);
+  await putLocalEpisode(payload).catch(() => undefined);
+}
+
+export async function deleteCustomEpisode(episodeId: string): Promise<void> {
+  await apiDeleteCustomEpisode(episodeId);
+  await deleteLocalEpisode(episodeId).catch(() => undefined);
 }
 
 export async function saveMediaFile(
@@ -87,61 +111,85 @@ export async function saveMediaFile(
   file: File | Blob,
   fileName: string,
   mimeType: string
-): Promise<StoredMediaRecord> {
-  const estimate = await checkStorageQuota();
-  if (estimate && estimate.availableBytes < file.size + 1024 * 1024) {
-    throw new Error(
-      `Kapasitas penyimpanan browser tidak mencukupi untuk file ${fileName} (${formatBytes(
-        file.size
-      )}). Tersedia sekitar ${formatBytes(estimate.availableBytes)}.`
-    );
-  }
-
-  const db = await openDb();
-  const record: StoredMediaRecord = {
-    id,
-    name: fileName,
-    mimeType,
-    size: file.size,
-    blob: file,
-    createdAt: new Date().toISOString()
+): Promise<Omit<StoredMediaRecord, 'blob'>> {
+  const meta = await apiUploadMediaFile(id, file, fileName, mimeType);
+  return {
+    id: meta.id,
+    name: meta.name,
+    mimeType: meta.mimeType,
+    size: meta.size,
+    createdAt: meta.createdAt
   };
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_MEDIA, 'readwrite');
-    const store = tx.objectStore(STORE_MEDIA);
-    const req = store.put(record);
-    req.onsuccess = () => resolve(record);
-    req.onerror = () => {
-      const err = req.error;
-      if (err && err.name === 'QuotaExceededError') {
-        reject(
-          new Error(
-            'Penyimpanan browser melebihi batas kuota (QuotaExceededError). Perkecil ukuran video/PDF atau hapus file lama.'
-          )
-        );
-      } else {
-        reject(err || new Error('Gagal menyimpan file media ke IndexedDB.'));
-      }
-    };
-  });
 }
 
 export async function getMediaById(id: string): Promise<StoredMediaRecord | null> {
   if (!id) return null;
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_MEDIA, 'readonly');
-    const store = tx.objectStore(STORE_MEDIA);
-    const req = store.get(id);
-    req.onsuccess = () => resolve((req.result as StoredMediaRecord) || null);
-    req.onerror = () => reject(req.error || new Error('Gagal membaca file media.'));
-  });
+  try {
+    const db = await openDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_MEDIA, 'readonly');
+      const store = tx.objectStore(STORE_MEDIA);
+      const req = store.get(id);
+      req.onsuccess = () => resolve((req.result as StoredMediaRecord) || null);
+      req.onerror = () =>
+        reject(req.error || new Error('Gagal membaca file media lokal.'));
+    });
+  } catch {
+    return null;
+  }
+}
+
+export interface ResolvedMediaSource {
+  url: string;
+  name: string;
+  mimeType: string;
+  isObjectUrl: boolean;
+}
+
+export async function resolveMediaSource(
+  id?: string
+): Promise<ResolvedMediaSource | null> {
+  if (!id) return null;
+  try {
+    const meta = await apiGetMediaMeta(id);
+    if (meta) {
+      return {
+        url: getServerMediaUrl(meta.id),
+        name: meta.name,
+        mimeType: meta.mimeType,
+        isObjectUrl: false
+      };
+    }
+  } catch {
+    // fallback to local IndexedDB cache if offline
+  }
+
+  const localRec = await getMediaById(id);
+  if (localRec) {
+    return {
+      url: URL.createObjectURL(localRec.blob),
+      name: localRec.name,
+      mimeType: localRec.mimeType,
+      isObjectUrl: true
+    };
+  }
+  return null;
 }
 
 export async function getAllMediaMetadata(): Promise<
   Array<Omit<StoredMediaRecord, 'blob'>>
 > {
+  try {
+    const res = await fetch('/api/media', { cache: 'no-store' });
+    if (res.ok) {
+      const data = (await res.json()) as {
+        media?: Array<Omit<StoredMediaRecord, 'blob'>>;
+      };
+      if (Array.isArray(data.media)) return data.media;
+    }
+  } catch {
+    // fallback to IndexedDB
+  }
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_MEDIA, 'readonly');
@@ -164,14 +212,19 @@ export async function getAllMediaMetadata(): Promise<
 }
 
 export async function deleteMediaById(id: string): Promise<void> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_MEDIA, 'readwrite');
-    const store = tx.objectStore(STORE_MEDIA);
-    const req = store.delete(id);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error || new Error('Gagal menghapus media.'));
-  });
+  await apiDeleteMedia(id).catch(() => undefined);
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_MEDIA, 'readwrite');
+      const store = tx.objectStore(STORE_MEDIA);
+      const req = store.delete(id);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error || new Error('Gagal menghapus media lokal.'));
+    });
+  } catch {
+    // ignore local cleanup errors
+  }
 }
 
 export async function checkStorageQuota(): Promise<{
@@ -209,57 +262,8 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const res = typeof reader.result === 'string' ? reader.result : '';
-      const commaIdx = res.indexOf(',');
-      resolve(commaIdx >= 0 ? res.slice(commaIdx + 1) : res);
-    };
-    reader.onerror = () => reject(new Error('Gagal mengonversi file media ke base64.'));
-    reader.readAsDataURL(blob);
-  });
-}
-
-function base64ToBlob(base64: string, mimeType: string): Blob {
-  const byteString = atob(base64);
-  const len = byteString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = byteString.charCodeAt(i);
-  }
-  return new Blob([bytes], { type: mimeType });
-}
-
 export async function exportContentBackup(): Promise<ContentBackupPayload> {
-  const db = await openDb();
-  const episodes = await getAllCustomEpisodes();
-
-  const mediaRecords = await new Promise<StoredMediaRecord[]>((resolve, reject) => {
-    const tx = db.transaction(STORE_MEDIA, 'readonly');
-    const req = tx.objectStore(STORE_MEDIA).getAll();
-    req.onsuccess = () => resolve((req.result as StoredMediaRecord[]) || []);
-    req.onerror = () => reject(req.error || new Error('Gagal membaca media untuk cadangan.'));
-  });
-
-  const serializedMedia = await Promise.all(
-    mediaRecords.map(async (m) => ({
-      id: m.id,
-      name: m.name,
-      mimeType: m.mimeType,
-      size: m.size,
-      createdAt: m.createdAt,
-      base64Data: await blobToBase64(m.blob)
-    }))
-  );
-
-  return {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    episodes,
-    media: serializedMedia
-  };
+  return apiExportContentBackup();
 }
 
 export async function importContentBackup(
@@ -274,20 +278,5 @@ export async function importContentBackup(
     throw new Error('Format file cadangan tidak valid.');
   }
 
-  let mediaImported = 0;
-  for (const m of payload.media) {
-    if (!m.id || !m.base64Data) continue;
-    const blob = base64ToBlob(m.base64Data, m.mimeType || 'application/octet-stream');
-    await saveMediaFile(m.id, blob, m.name || 'lampiran', m.mimeType || 'application/octet-stream');
-    mediaImported += 1;
-  }
-
-  let episodesImported = 0;
-  for (const ep of payload.episodes) {
-    if (!ep.id || !ep.moduleId) continue;
-    await saveCustomEpisode(ep);
-    episodesImported += 1;
-  }
-
-  return { episodesImported, mediaImported };
+  return apiImportContentBackup(payload);
 }

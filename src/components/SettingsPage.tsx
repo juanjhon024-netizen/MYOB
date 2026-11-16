@@ -23,8 +23,8 @@ interface SettingsPageProps {
     studentCode: string;
     fullName: string;
     className: string;
-  }) => void;
-  onResetProgress: () => void;
+  }) => Promise<void> | void;
+  onResetProgress: () => Promise<void> | void;
 }
 
 export function SettingsPage({
@@ -40,22 +40,28 @@ export function SettingsPage({
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetDoneMsg, setResetDoneMsg] = useState('');
 
-  const handleSaveProfile = (e: React.FormEvent) => {
+  const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!fullName.trim() || !className.trim()) return;
-    onUpdateProfile({
-      studentCode: student.studentCode,
-      fullName: fullName.trim(),
-      className: className.trim()
-    });
-    setSaveMessage('Profil siswa berhasil diperbarui di penyimpanan lokal.');
+    try {
+      await onUpdateProfile({
+        studentCode: student.studentCode,
+        fullName: fullName.trim(),
+        className: className.trim()
+      });
+      setSaveMessage('Profil siswa berhasil diperbarui dan disinkronkan ke server.');
+    } catch (err) {
+      setSaveMessage(
+        err instanceof Error ? err.message : 'Gagal memperbarui profil ke server.'
+      );
+    }
     setTimeout(() => setSaveMessage(''), 4000);
   };
 
-  const handleConfirmReset = () => {
-    onResetProgress();
+  const handleConfirmReset = async () => {
+    await onResetProgress();
     setShowResetConfirm(false);
-    setResetDoneMsg('Progres belajar siswa untuk kode ini telah direset ke kondisi awal.');
+    setResetDoneMsg('Progres belajar siswa untuk kode ini telah direset di server.');
     setTimeout(() => setResetDoneMsg(''), 5000);
   };
 
@@ -63,23 +69,23 @@ export function SettingsPage({
     <div className="space-y-6">
       <div className="rounded-xl border border-slate-200 bg-white p-6">
         <h1 className="font-display text-2xl font-bold text-[#14263D]">
-          Pengaturan Akun Lokal &amp; Data
+          Pengaturan Akun &amp; Data
         </h1>
         <p className="mt-1.5 text-sm text-slate-600">
-          Kelola identitas siswa aktif, cadangkan hasil belajar, atau atur ulang progres di
-          perangkat ini.
+          Kelola identitas siswa aktif, cadangkan hasil belajar, atau atur ulang progres Anda di
+          server Smart-Guide.
         </p>
       </div>
 
       <div className="flex items-start gap-3 rounded-xl border border-[#3569B0]/30 bg-[#EAF3FF] p-5 text-sm text-[#14263D]">
         <Info className="mt-0.5 h-5 w-5 shrink-0 text-[#3569B0]" />
         <div>
-          <p className="font-bold">Penyimpanan Lokal Browser (Smart-Guide)</p>
+          <p className="font-bold">Sinkronisasi Server Online (Smart-Guide)</p>
           <p className="mt-1 text-xs leading-relaxed text-slate-700">
-            Seluruh profil siswa, jawaban kuis, dan progres praktik hanya disimpan pada browser
-            perangkat yang sedang Anda gunakan. Data tidak otomatis tersinkron ke komputer guru.
-            Gunakan tombol ekspor berkas pengumpulan di bawah atau di halaman Status &amp; Progres
-            untuk menyerahkan hasil belajar Anda kepada guru.
+            Seluruh profil siswa, jawaban kuis, dan progres praktik tersimpan pada server
+            Smart-Guide sehingga dapat diakses kembali dari perangkat lain dan langsung dipantau
+            oleh guru. Tombol ekspor berkas pengumpulan di bawah tetap tersedia sebagai arsip
+            cadangan pribadi Anda.
           </p>
         </div>
       </div>

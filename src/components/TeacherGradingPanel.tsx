@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Ban,
@@ -8,6 +8,7 @@ import {
   FileSpreadsheet,
   Info,
   MonitorCheck,
+  RefreshCw,
   Search,
   Trash2,
   Upload,
@@ -24,14 +25,15 @@ import {
 import {
   calculateLearningMetrics,
   computeEpisodeAutoGrade,
-  deleteStudentData,
+  deleteStudentRemote,
   exportTeacherGradebookCsv,
   exportTeacherGradebookJson,
   getAllStudentsForTeacher,
+  getAllStudentsForTeacherRemote,
   ImportedStudentSubmission,
+  importStudentSubmissionRemote,
   isEpisodeSimulationEnabled,
-  saveImportedSubmission,
-  setStudentDisabledStatus
+  setStudentDisabledRemote
 } from '../services/storage';
 import { CheckpointStatusText } from './StatusBadge';
 
@@ -43,6 +45,7 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
   const [students, setStudents] = useState<ImportedStudentSubmission[]>(() =>
     getAllStudentsForTeacher()
   );
+  const [isLoadingServer, setIsLoadingServer] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'disabled'>('all');
   const [selectedStudentCode, setSelectedStudentCode] = useState<string>(
@@ -67,44 +70,85 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
     [modules]
   );
 
-  const reloadStudents = (preferredCode?: string) => {
-    const next = getAllStudentsForTeacher();
-    setStudents(next);
-    if (preferredCode !== undefined) {
-      setSelectedStudentCode(preferredCode);
-    } else if (next.length === 0) {
-      setSelectedStudentCode('');
-    } else if (
-      !next.some((s) => s.profile.studentCode === selectedStudentCode)
-    ) {
-      setSelectedStudentCode(next[0].profile.studentCode);
+  const reloadStudents = useCallback(
+    async (preferredCode?: string) => {
+      setIsLoadingServer(true);
+      try {
+        const next = await getAllStudentsForTeacherRemote();
+        setStudents(next);
+        if (preferredCode !== undefined) {
+          setSelectedStudentCode(preferredCode);
+        } else if (next.length === 0) {
+          setSelectedStudentCode('');
+        } else {
+          setSelectedStudentCode((prev) =>
+            next.some((s) => s.profile.studentCode === prev)
+              ? prev
+              : next[0].profile.studentCode
+          );
+        }
+      } catch (err) {
+        setBanner({
+          type: 'error',
+          text:
+            err instanceof Error
+              ? err.message
+              : 'Gagal memuat daftar nilai siswa dari server.'
+        });
+      } finally {
+        setIsLoadingServer(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    reloadStudents();
+  }, [reloadStudents]);
+
+  const handleToggleDisableStudent = async (profile: StudentProfile) => {
+    const nextDisabled = !profile.isDisabled;
+    try {
+      await setStudentDisabledRemote(profile.studentCode, nextDisabled);
+      await reloadStudents(profile.studentCode);
+      setBanner({
+        type: 'success',
+        text: nextDisabled
+          ? `Akun siswa "${profile.fullName}" (${profile.studentCode}) dinonaktifkan di server. Siswa tidak dapat masuk dari perangkat mana pun hingga diaktifkan kembali.`
+          : `Akun siswa "${profile.fullName}" (${profile.studentCode}) berhasil diaktifkan kembali.`
+      });
+    } catch (err) {
+      setBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Gagal mengubah status akun siswa di server.'
+      });
     }
   };
 
-  const handleToggleDisableStudent = (profile: StudentProfile) => {
-    const nextDisabled = !profile.isDisabled;
-    setStudentDisabledStatus(profile.studentCode, nextDisabled);
-    reloadStudents(profile.studentCode);
-    setBanner({
-      type: 'success',
-      text: nextDisabled
-        ? `Akun siswa "${profile.fullName}" (${profile.studentCode}) dinonaktifkan. Siswa tidak dapat masuk ke e-learning di perangkat ini hingga diaktifkan kembali.`
-        : `Akun siswa "${profile.fullName}" (${profile.studentCode}) berhasil diaktifkan kembali.`
-    });
-  };
-
-  const handleConfirmDeleteStudent = () => {
+  const handleConfirmDeleteStudent = async () => {
     if (!confirmDeleteTarget) return;
     const { studentCode, fullName } = confirmDeleteTarget;
-    deleteStudentData(studentCode);
-    setConfirmDeleteTarget(null);
-    const next = getAllStudentsForTeacher();
-    setStudents(next);
-    setSelectedStudentCode(next[0]?.profile.studentCode || '');
-    setBanner({
-      type: 'success',
-      text: `Nama dan seluruh data belajar siswa "${fullName}" (${studentCode}) telah dihapus permanen dari perangkat ini.`
-    });
+    try {
+      await deleteStudentRemote(studentCode);
+      setConfirmDeleteTarget(null);
+      await reloadStudents();
+      setBanner({
+        type: 'success',
+        text: `Nama dan seluruh data belajar siswa "${fullName}" (${studentCode}) telah dihapus permanen dari server.`
+      });
+    } catch (err) {
+      setConfirmDeleteTarget(null);
+      setBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Gagal menghapus data siswa di server.'
+      });
+    }
   };
 
   const handleImportStudentFile = async (
@@ -135,7 +179,7 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
           continue;
         }
 
-        saveImportedSubmission(parsed.siswa, parsed.progresDetail);
+        await importStudentSubmissionRemote(parsed.siswa, parsed.progresDetail);
         importedCount += 1;
         lastCode = parsed.siswa.studentCode;
       } catch {
@@ -144,12 +188,12 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
     }
 
     e.target.value = '';
-    reloadStudents(lastCode || undefined);
+    await reloadStudents(lastCode || undefined);
 
     if (importedCount > 0 && failedNames.length === 0) {
       setBanner({
         type: 'success',
-        text: `${importedCount} berkas pengumpulan siswa berhasil diimpor dan dinilai otomatis.`
+        text: `${importedCount} berkas pengumpulan siswa berhasil diimpor ke server dan dinilai otomatis.`
       });
     } else if (importedCount > 0) {
       setBanner({
@@ -317,6 +361,16 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={isLoadingServer}
+              onClick={() => reloadStudents()}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-[#14263D] hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 text-[#3569B0] ${isLoadingServer ? 'animate-spin' : ''}`} />
+              <span>{isLoadingServer ? 'Memuat...' : 'Muat Ulang Server'}</span>
+            </button>
+
             <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#19A89B] px-3.5 py-2 text-xs font-bold text-white hover:bg-[#148f84] whitespace-nowrap">
               <Upload className="h-3.5 w-3.5" />
               <span>Impor Hasil Siswa (.json)</span>
@@ -446,7 +500,7 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
                   </strong>{' '}
                   ({confirmDeleteTarget.studentCode} · {confirmDeleteTarget.className}) beserta
                   seluruh progres, jawaban kuis, dan riwayat praktik akan dihapus permanen dari
-                  browser ini.
+                  server.
                 </p>
               </div>
             </div>
@@ -522,7 +576,7 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
         {studentAggregates.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-600">
             {students.length === 0
-              ? 'Belum ada data siswa tersimpan. Siswa dapat mengerjakan di perangkat ini atau mengumpulkan file .json untuk diimpor ke panel ini.'
+              ? 'Belum ada data siswa di server. Saat siswa masuk dan mengerjakan di perangkat masing-masing, hasilnya akan langsung tampil di sini.'
               : 'Tidak ada siswa yang sesuai dengan filter atau pencarian.'}
           </div>
         ) : (
@@ -574,12 +628,14 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
                             className={
                               row.item.source === 'imported'
                                 ? 'font-semibold text-[#19A89B]'
-                                : 'text-slate-500'
+                                : 'text-[#3569B0] font-medium'
                             }
                           >
                             {row.item.source === 'imported'
                               ? 'File Impor'
-                              : 'Perangkat Ini'}
+                              : row.item.source === 'server'
+                                ? 'Sinkron Server'
+                                : 'Perangkat Ini'}
                           </span>
                         </p>
                       </td>
@@ -687,7 +743,7 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
               </h3>
               {activeStudent.profile.isDisabled && (
                 <p className="mt-1 text-xs font-medium text-amber-300">
-                  Status: Nonaktif — Siswa ini tidak dapat masuk di perangkat ini hingga
+                  Status: Nonaktif — Siswa ini tidak dapat masuk dari perangkat mana pun hingga
                   diaktifkan kembali.
                 </p>
               )}
@@ -955,12 +1011,11 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
       <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-5 text-xs text-slate-600">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#3569B0]" />
         <p>
-          <strong>Alur Penilaian Lab Sekolah (Offline):</strong> Minta siswa menekan{' '}
-          <strong className="text-[#14263D]">Unduh Berkas Pengumpulan (.json)</strong> di
-          halaman <em>Status &amp; Progres</em> pada komputernya, lalu kumpulkan file tersebut
-          dan unggah ke sini lewat tombol{' '}
-          <strong className="text-[#14263D]">Impor Hasil Siswa (.json)</strong> untuk
-          melihat nilai detail dan mengekspor rekap Excel (CSV) seluruh kelas.
+          <strong>Sinkronisasi Server Online:</strong> Hasil kuis dan simulasi siswa yang
+          dikerjakan di perangkat masing-masing otomatis tersimpan ke server dan dapat dipantau
+          langsung melalui tombol <strong className="text-[#14263D]">Muat Ulang Server</strong>.
+          Fitur <strong className="text-[#14263D]">Impor Hasil Siswa (.json)</strong> tetap
+          disediakan sebagai cadangan.
         </p>
       </div>
     </div>

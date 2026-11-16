@@ -17,7 +17,7 @@ const GUIDE_SECTIONS = [
     steps: [
       'Pada halaman pembuka Smart-Guide, klik tombol MULAI BELAJAR.',
       'Isi Kode Siswa (NIS/kode absen), Nama Lengkap, dan Kelas Anda.',
-      'Klik MASUK KE E-LEARNING. Jika kode siswa yang sama pernah digunakan di komputer ini, Anda dapat langsung memilih Lanjutkan Progres Sebelumnya.'
+      'Klik MASUK KE E-LEARNING. Jika kode siswa yang sama pernah digunakan, Anda dapat langsung memilih Lanjutkan Progres Sebelumnya dari perangkat mana saja.'
     ]
   },
   {
@@ -72,10 +72,10 @@ const GUIDE_SECTIONS = [
   },
   {
     icon: Download,
-    title: '8. Cara Mengumpulkan Hasil Belajar',
+    title: '8. Pengumpulan & Arsip Hasil Belajar',
     steps: [
-      'Buka menu Status & Progres lalu klik Unduh Berkas Pengumpulan (.json).',
-      'Serahkan file .json tersebut kepada guru untuk diimpor ke Mode Guru karena progres tersimpan secara lokal di komputer masing-masing.'
+      'Hasil kuis, simulasi, dan progres belajar Anda otomatis tersinkron ke server Smart-Guide sehingga langsung dapat diperiksa guru.',
+      'Jika diminta arsip cadangan, buka menu Status & Progres lalu klik Unduh Berkas Pengumpulan (.json).'
     ]
   }
 ];
@@ -127,12 +127,11 @@ export function GuidePage() {
           </h2>
         </div>
         <p className="mt-2 text-sm leading-relaxed text-slate-600">
-          Menu <strong>Mode Guru (Materi &amp; Nilai)</strong> dilindungi PIN akses lokal (standar
+          Menu <strong>Mode Guru (Materi &amp; Nilai)</strong> dilindungi PIN akses server (standar
           awal: <span className="font-mono font-bold text-[#14263D]">1818</span>, dapat diubah di
           dalam Mode Guru). Hanya guru yang dapat menambah/mengubah materi, PDF, video MP4, soal
-          kuis, mengatur tahapan <strong>Simulasi Terpandu</strong>, serta membuka{' '}
-          <strong>Penilaian Detail &amp; Otomatis</strong> (impor berkas{' '}
-          <span className="font-mono">.json</span> siswa dan ekspor rekap nilai Excel CSV).
+          kuis, mengatur tahapan <strong>Simulasi Terpandu</strong>, mengelola akun siswa, serta
+          membuka <strong>Penilaian Detail &amp; Otomatis</strong> dan ekspor rekap nilai Excel CSV.
         </p>
       </section>
     </div>

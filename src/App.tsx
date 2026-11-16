@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   EpisodeContent,
   ModuleData,
@@ -11,13 +11,15 @@ import {
 import { findEpisodeById, mergeCurriculumWithOverrides } from './data/curriculum';
 import {
   clearActiveStudentSession,
+  deleteStudentData,
+  enterStudentSessionRemote,
+  fetchStudentProgressRemote,
   getActiveStudent,
   getEpisodeStageStatuses,
-  isStudentCodeDisabled,
   loadStudentProgress,
-  resetStudentProgress,
-  saveStudentProfile,
-  saveStudentProgress
+  resetStudentProgressRemote,
+  saveStudentProgress,
+  syncProgressToServer
 } from './services/storage';
 import { getAllCustomEpisodes } from './services/contentDb';
 import { WelcomePage } from './components/WelcomePage';
@@ -42,18 +44,22 @@ export default function App() {
     const active = getActiveStudent();
     return active ? loadStudentProgress(active.studentCode) : null;
   });
+  const [sessionNotice, setSessionNotice] = useState<string>('');
   const [customEpisodes, setCustomEpisodes] = useState<EpisodeContent[]>([]);
   const [activePage, setActivePage] = useState<NavPage>('dashboard');
   const [activeEpisodeId, setActiveEpisodeId] = useState<string>('ep-1-1');
   const [episodeInitialTab, setEpisodeInitialTab] =
     useState<EpisodeActivityTab>('tujuan');
 
+  const studentRef = useRef<StudentProfile | null>(student);
+  studentRef.current = student;
+
   const refreshCustomContent = useCallback(async () => {
     try {
       const stored = await getAllCustomEpisodes();
       setCustomEpisodes(stored);
     } catch {
-      // Keep base curriculum if IndexedDB is unavailable
+      // Keep base curriculum if server/IndexedDB is unavailable
     }
   }, []);
 
@@ -61,25 +67,82 @@ export default function App() {
     refreshCustomContent();
   }, [refreshCustomContent]);
 
+  const handleForceLogout = useCallback((noticeMessage?: string) => {
+    clearActiveStudentSession();
+    setStudent(null);
+    setProgress(null);
+    setActivePage('dashboard');
+    if (noticeMessage) {
+      setSessionNotice(noticeMessage);
+    }
+  }, []);
+
+  const verifyAndSyncActiveStudent = useCallback(async () => {
+    const current = studentRef.current;
+    if (!current) return;
+    const remote = await fetchStudentProgressRemote(current.studentCode);
+    if (remote.status === 'disabled') {
+      handleForceLogout(
+        'Akun Anda telah dinonaktifkan oleh guru melalui Mode Guru.'
+      );
+      return;
+    }
+    if (remote.status === 'deleted') {
+      deleteStudentData(current.studentCode);
+      handleForceLogout(
+        'Data akun siswa Anda telah dihapus oleh guru pengampu.'
+      );
+      return;
+    }
+    if (remote.status === 'ok') {
+      setStudent(remote.profile);
+      setProgress((prev) => {
+        if (!prev) return remote.progress;
+        // Prefer whichever record is newer
+        return remote.progress.updatedAt >= prev.updatedAt
+          ? remote.progress
+          : prev;
+      });
+    }
+  }, [handleForceLogout]);
+
+  // Verify active student & pull latest curriculum on mount and window focus
+  useEffect(() => {
+    if (!student?.studentCode) return;
+    verifyAndSyncActiveStudent();
+  }, [student?.studentCode, verifyAndSyncActiveStudent]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      refreshCustomContent();
+      if (studentRef.current) {
+        verifyAndSyncActiveStudent();
+      }
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refreshCustomContent, verifyAndSyncActiveStudent]);
+
   const modules: ModuleData[] = useMemo(
     () => mergeCurriculumWithOverrides(customEpisodes),
     [customEpisodes]
   );
 
-  const handleEnterLms = (
+  const handleEnterLms = async (
     input: { studentCode: string; fullName: string; className: string },
     _mode: 'resume' | 'new_or_update'
   ) => {
-    if (isStudentCodeDisabled(input.studentCode)) return;
-    const saved = saveStudentProfile(input);
-    const loadedProg = loadStudentProgress(saved.studentCode);
-    setStudent(saved);
+    setSessionNotice('');
+    const { profile, progress: loadedProg } = await enterStudentSessionRemote(input);
+    setStudent(profile);
     setProgress(loadedProg);
     setActiveEpisodeId(loadedProg.lastOpenedEpisodeId || 'ep-1-1');
     setActivePage('dashboard');
+    refreshCustomContent();
   };
 
   const handleLogout = () => {
+    setSessionNotice('');
     clearActiveStudentSession();
     setStudent(null);
     setProgress(null);
@@ -95,21 +158,34 @@ export default function App() {
       }
     }
     setActivePage(page);
+    if (page !== 'content_manager') {
+      refreshCustomContent();
+    }
   };
 
   const updateProgress = (updater: (prev: StudentProgress) => StudentProgress) => {
     setProgress((prev) => {
       if (!prev) return prev;
-      const next = updater(prev);
+      const next = {
+        ...updater(prev),
+        updatedAt: new Date().toISOString()
+      };
       saveStudentProgress(next);
+      const currentStudent = studentRef.current;
+      if (currentStudent) {
+        syncProgressToServer(currentStudent, next).then((status) => {
+          if (status === 'disabled') {
+            handleForceLogout(
+              'Akun Anda telah dinonaktifkan oleh guru melalui Mode Guru.'
+            );
+          }
+        });
+      }
       return next;
     });
   };
 
-  const handleOpenEpisode = (
-    episodeId: string,
-    tab?: string
-  ) => {
+  const handleOpenEpisode = (episodeId: string, tab?: string) => {
     setActiveEpisodeId(episodeId);
     setEpisodeInitialTab((tab as EpisodeActivityTab) || 'tujuan');
     setActivePage('episode');
@@ -212,23 +288,28 @@ export default function App() {
     });
   };
 
-  const handleUpdateProfile = (next: {
+  const handleUpdateProfile = async (next: {
     studentCode: string;
     fullName: string;
     className: string;
   }) => {
-    const updated = saveStudentProfile(next);
-    setStudent(updated);
+    const { profile } = await enterStudentSessionRemote(next);
+    setStudent(profile);
   };
 
-  const handleResetProgress = () => {
+  const handleResetProgress = async () => {
     if (!student) return;
-    const fresh = resetStudentProgress(student.studentCode);
+    const fresh = await resetStudentProgressRemote(student.studentCode);
     setProgress(fresh);
   };
 
   if (!student || !progress) {
-    return <WelcomePage onEnterLms={handleEnterLms} />;
+    return (
+      <WelcomePage
+        onEnterLms={handleEnterLms}
+        sessionNotice={sessionNotice}
+      />
+    );
   }
 
   const activeEpInfo =

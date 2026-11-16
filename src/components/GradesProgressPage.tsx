@@ -192,10 +192,11 @@ export function GradesProgressPage({
         <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-5 text-xs text-slate-600">
           <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#3569B0]" />
           <p>
-            <strong className="text-[#14263D]">Pengumpulan Hasil Belajar:</strong> Data tersimpan
-            secara lokal di browser perangkat ini. Klik{' '}
-            <strong className="text-[#14263D]">Unduh Berkas Pengumpulan (.json)</strong> lalu
-            serahkan file tersebut kepada guru untuk dinilai melalui fitur impor di Mode Guru.
+            <strong className="text-[#14263D]">Sinkronisasi Server &amp; Cadangan:</strong> Progres
+            belajar Anda otomatis tersimpan ke server Smart-Guide dan dapat dilihat oleh guru
+            melalui Mode Guru. Tombol{' '}
+            <strong className="text-[#14263D]">Unduh Berkas Pengumpulan (.json)</strong> tetap
+            disediakan apabila diperlukan sebagai arsip cadangan.
           </p>
         </div>
       </div>

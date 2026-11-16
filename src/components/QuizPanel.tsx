@@ -204,12 +204,12 @@ export function QuizPanel({
           )}
           {!validationMsg && !isSubmitted && (
             <p className="text-xs text-slate-500">
-              Jawaban Anda akan disimpan ke perangkat ini untuk dinilai otomatis oleh guru.
+              Jawaban Anda akan disimpan ke server untuk dinilai otomatis oleh guru.
             </p>
           )}
           {isSubmitted && existingResult && (
             <p className="text-xs text-slate-500 tabular-nums">
-              Percobaan ke-{existingResult.attempts} tersimpan pada perangkat ini.
+              Percobaan ke-{existingResult.attempts} telah tersimpan di server.
             </p>
           )}
         </div>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Film, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { getMediaById } from '../services/contentDb';
+import { resolveMediaSource } from '../services/contentDb';
 
 interface VideoPlayerBoxProps {
   localPath?: string;
@@ -30,13 +30,13 @@ export function VideoPlayerBox({
       setVideoSrc(null);
 
       try {
-        // 1. Check IndexedDB attachment first if present
+        // 1. Check Server media attachment (or IndexedDB cache) first if present
         if (mediaAttachmentId) {
-          const media = await getMediaById(mediaAttachmentId);
+          const media = await resolveMediaSource(mediaAttachmentId);
           if (media && active) {
-            objectUrl = URL.createObjectURL(media.blob);
-            setVideoSrc(objectUrl);
-            setSourceLabel(`File Lokal Unggahan (${media.name})`);
+            if (media.isObjectUrl) objectUrl = media.url;
+            setVideoSrc(media.url);
+            setSourceLabel(`Video Unggahan Guru (${media.name})`);
             setChecking(false);
             return;
           }
@@ -49,7 +49,7 @@ export function VideoPlayerBox({
           if (res.ok && contentType.toLowerCase().startsWith('video/')) {
             if (active) {
               setVideoSrc(localPath);
-              setSourceLabel(`Aset Lokal (${localPath})`);
+              setSourceLabel(`Aset Server (${localPath})`);
               setChecking(false);
             }
             return;
@@ -93,19 +93,18 @@ export function VideoPlayerBox({
           Video tutorial belum tersedia.
         </h3>
         <p className="mx-auto mt-2 max-w-lg text-sm text-slate-300">
-          File video MP4 belum ditemukan pada folder aset lokal{' '}
+          File video MP4 belum ditemukan pada folder aset{' '}
           <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-xs">
             {localPath || '/videos/tutorial-praktik-myob.mp4'}
           </code>{' '}
-          maupun penyimpanan unggahan perangkat ini.
+          maupun penyimpanan unggahan server.
         </p>
         <div className="mx-auto mt-4 flex max-w-md items-start gap-2 rounded-lg bg-white/5 p-3 text-left text-xs text-slate-300">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[#19A89B]" />
           <span>
-            Guru/pengelola dapat mengunggah file video MP4 secara lokal melalui menu{' '}
-            <strong className="text-white">Pengelola Materi</strong>, atau menyalin file{' '}
-            <span className="font-mono">tutorial-praktik-myob.mp4</span> ke folder{' '}
-            <span className="font-mono">public/videos/</span> sebelum build.
+            Guru dapat mengunggah file video MP4 secara langsung melalui menu{' '}
+            <strong className="text-white">Mode Guru</strong> agar otomatis tersedia bagi seluruh
+            siswa di perangkat masing-masing.
           </span>
         </div>
       </div>

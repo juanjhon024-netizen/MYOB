@@ -24,7 +24,7 @@ import { VideoPlayerBox } from './VideoPlayerBox';
 import { VirtualLabPanel } from './VirtualLabPanel';
 import { DynamicVirtualLabPanel } from './DynamicVirtualLabPanel';
 import { QuizPanel } from './QuizPanel';
-import { getMediaById } from '../services/contentDb';
+import { resolveMediaSource } from '../services/contentDb';
 
 export type EpisodeActivityTab =
   | 'tujuan'
@@ -83,10 +83,10 @@ export function EpisodePage({
         setPdfName('');
         return;
       }
-      const media = await getMediaById(episode.pdfAttachmentId);
+      const media = await resolveMediaSource(episode.pdfAttachmentId);
       if (media && active) {
-        url = URL.createObjectURL(media.blob);
-        setPdfUrl(url);
+        if (media.isObjectUrl) url = media.url;
+        setPdfUrl(media.url);
         setPdfName(media.name);
       }
     }

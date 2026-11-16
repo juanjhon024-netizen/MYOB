@@ -6,6 +6,21 @@ import {
   StudentProfile,
   StudentProgress
 } from '../types/lms';
+import {
+  ApiHttpError,
+  apiCreateOrResumeStudentSession,
+  apiDeleteStudent,
+  apiGetStudentProgress,
+  apiGetTeacherStudents,
+  apiImportStudentSubmission,
+  apiLookupStudent,
+  apiResetStudentProgress,
+  apiSaveStudentProgress,
+  apiSetStudentDisabled,
+  apiUpdateTeacherPin,
+  apiVerifyTeacherPin,
+  setActiveTeacherPinSession
+} from './api';
 
 const PROFILES_KEY = 'smartguide_profiles_v1';
 const ACTIVE_CODE_KEY = 'smartguide_active_student_v1';
@@ -41,6 +56,25 @@ export function getTeacherPin(): string {
 
 export function setTeacherPin(newPin: string): void {
   localStorage.setItem(TEACHER_PIN_KEY, newPin.trim());
+}
+
+export async function verifyTeacherPinRemote(pin: string): Promise<boolean> {
+  try {
+    return await apiVerifyTeacherPin(pin);
+  } catch (err) {
+    if (err instanceof ApiHttpError) {
+      return false;
+    }
+    // Offline fallback only when server is unreachable
+    const ok = pin.trim() === getTeacherPin();
+    if (ok) setActiveTeacherPinSession(pin.trim());
+    return ok;
+  }
+}
+
+export async function updateTeacherPinRemote(newPin: string): Promise<void> {
+  await apiUpdateTeacherPin(newPin);
+  setTeacherPin(newPin);
 }
 
 export function isEpisodeSimulationEnabled(ep: EpisodeContent): boolean {
@@ -108,6 +142,7 @@ export function saveStudentProfile(
           studentCode: normalizedCode,
           fullName: input.fullName.trim(),
           className: input.className.trim(),
+          isDisabled: false,
           lastActiveAt: now
         }
       : {
@@ -139,6 +174,139 @@ export function saveStudentProfile(
   }
 
   return profile;
+}
+
+export function cacheRemoteStudentData(
+  profile: StudentProfile,
+  progress: StudentProgress
+): void {
+  const normalizedCode = profile.studentCode.trim().toLowerCase();
+  const profiles = getSavedProfiles();
+  const existingIdx = profiles.findIndex(
+    (p) => p.studentCode.trim().toLowerCase() === normalizedCode
+  );
+
+  if (existingIdx >= 0) {
+    profiles[existingIdx] = profile;
+  } else {
+    profiles.unshift(profile);
+  }
+
+  localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+  localStorage.setItem(ACTIVE_CODE_KEY, profile.studentCode);
+  localStorage.setItem(
+    PROGRESS_PREFIX + profile.studentCode,
+    JSON.stringify(progress)
+  );
+
+  const disabledSet = getDisabledCodeSet();
+  disabledSet.delete(normalizedCode);
+  saveDisabledCodeSet(disabledSet);
+}
+
+export async function lookupStudentRemote(studentCode: string): Promise<{
+  exists: boolean;
+  isDisabled: boolean;
+  profile: StudentProfile | null;
+}> {
+  const trimmed = studentCode.trim();
+  if (!trimmed) return { exists: false, isDisabled: false, profile: null };
+  try {
+    const res = await apiLookupStudent(trimmed);
+    return {
+      exists: res.exists,
+      isDisabled: res.isDisabled,
+      profile: res.profile || null
+    };
+  } catch {
+    const localProf = findProfileByCode(trimmed);
+    return {
+      exists: Boolean(localProf),
+      isDisabled: isStudentCodeDisabled(trimmed),
+      profile: localProf
+    };
+  }
+}
+
+export async function enterStudentSessionRemote(input: {
+  studentCode: string;
+  fullName: string;
+  className: string;
+}): Promise<{ profile: StudentProfile; progress: StudentProgress }> {
+  try {
+    const { profile, progress } = await apiCreateOrResumeStudentSession(input);
+    cacheRemoteStudentData(profile, progress);
+    return { profile, progress };
+  } catch (err) {
+    if (err instanceof ApiHttpError) {
+      if (err.status === 403) {
+        setStudentDisabledStatus(input.studentCode, true);
+      }
+      throw err;
+    }
+    // Fallback if offline
+    if (isStudentCodeDisabled(input.studentCode)) {
+      throw new Error(
+        'Akun siswa ini sedang dinonaktifkan oleh guru.'
+      );
+    }
+    const saved = saveStudentProfile(input);
+    const loadedProg = loadStudentProgress(saved.studentCode);
+    return { profile: saved, progress: loadedProg };
+  }
+}
+
+export async function fetchStudentProgressRemote(studentCode: string): Promise<
+  | { status: 'ok'; profile: StudentProfile; progress: StudentProgress }
+  | { status: 'disabled' | 'deleted' | 'offline' }
+> {
+  try {
+    const { profile, progress } = await apiGetStudentProgress(studentCode);
+    cacheRemoteStudentData(profile, progress);
+    return { status: 'ok', profile, progress };
+  } catch (err) {
+    if (err instanceof ApiHttpError) {
+      if (err.status === 403) {
+        setStudentDisabledStatus(studentCode, true);
+        return { status: 'disabled' };
+      }
+      if (err.status === 404) {
+        return { status: 'deleted' };
+      }
+    }
+    return { status: 'offline' };
+  }
+}
+
+export async function syncProgressToServer(
+  profile: StudentProfile,
+  progress: StudentProgress
+): Promise<'ok' | 'disabled' | 'offline'> {
+  try {
+    await apiSaveStudentProgress(profile, progress);
+    return 'ok';
+  } catch (err) {
+    if (err instanceof ApiHttpError && err.status === 403) {
+      setStudentDisabledStatus(profile.studentCode, true);
+      return 'disabled';
+    }
+    return 'offline';
+  }
+}
+
+export async function resetStudentProgressRemote(
+  studentCode: string
+): Promise<StudentProgress> {
+  try {
+    const fresh = await apiResetStudentProgress(studentCode);
+    saveStudentProgress(fresh);
+    return fresh;
+  } catch (err) {
+    if (err instanceof ApiHttpError && err.status === 403) {
+      throw err;
+    }
+    return resetStudentProgress(studentCode);
+  }
 }
 
 function getDisabledCodeSet(): Set<string> {
@@ -311,7 +479,7 @@ export interface ImportedStudentSubmission {
   profile: StudentProfile;
   progress: StudentProgress;
   importedAt: string;
-  source: 'local' | 'imported';
+  source: 'local' | 'imported' | 'server';
 }
 
 export function getImportedSubmissions(): ImportedStudentSubmission[] {
@@ -347,6 +515,14 @@ export function saveImportedSubmission(
   );
 }
 
+export async function importStudentSubmissionRemote(
+  profile: StudentProfile,
+  progress: StudentProgress
+): Promise<void> {
+  await apiImportStudentSubmission(profile, progress);
+  saveImportedSubmission(profile, progress);
+}
+
 export function getAllStudentsForTeacher(): ImportedStudentSubmission[] {
   const localProfiles = getSavedProfiles();
   const imported = getImportedSubmissions();
@@ -380,6 +556,13 @@ export function getAllStudentsForTeacher(): ImportedStudentSubmission[] {
   }
 
   return Array.from(byCode.values());
+}
+
+export async function getAllStudentsForTeacherRemote(): Promise<
+  ImportedStudentSubmission[]
+> {
+  const remoteList = await apiGetTeacherStudents();
+  return remoteList;
 }
 
 export function setStudentDisabledStatus(
@@ -427,6 +610,14 @@ export function setStudentDisabledStatus(
       : item
   );
   localStorage.setItem(IMPORTED_SUBMISSIONS_KEY, JSON.stringify(nextImported));
+}
+
+export async function setStudentDisabledRemote(
+  studentCode: string,
+  disabled: boolean
+): Promise<void> {
+  await apiSetStudentDisabled(studentCode, disabled);
+  setStudentDisabledStatus(studentCode, disabled);
 }
 
 export function deleteStudentData(studentCode: string): void {
@@ -494,6 +685,11 @@ export function deleteStudentData(studentCode: string): void {
   if (activeCode && activeCode.trim().toLowerCase() === normalized) {
     localStorage.removeItem(ACTIVE_CODE_KEY);
   }
+}
+
+export async function deleteStudentRemote(studentCode: string): Promise<void> {
+  await apiDeleteStudent(studentCode);
+  deleteStudentData(studentCode);
 }
 
 export interface EpisodeAutoGradeSummary {

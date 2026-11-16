@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
   BookOpen,
@@ -13,7 +13,8 @@ import { StudentProfile } from '../types/lms';
 import {
   findProfileByCode,
   getSavedProfiles,
-  isStudentCodeDisabled
+  isStudentCodeDisabled,
+  lookupStudentRemote
 } from '../services/storage';
 import welcomeWorkspaceImg from '../assets/images/welcome_accounting_workspace_1794759942170.jpg';
 
@@ -21,16 +22,32 @@ interface WelcomePageProps {
   onEnterLms: (
     data: { studentCode: string; fullName: string; className: string },
     mode: 'resume' | 'new_or_update'
-  ) => void;
+  ) => Promise<void> | void;
+  sessionNotice?: string;
 }
 
-export function WelcomePage({ onEnterLms }: WelcomePageProps) {
-  const [showIdentityForm, setShowIdentityForm] = useState(false);
+export function WelcomePage({ onEnterLms, sessionNotice }: WelcomePageProps) {
+  const [showIdentityForm, setShowIdentityForm] = useState(Boolean(sessionNotice));
   const [studentCode, setStudentCode] = useState('');
   const [fullName, setFullName] = useState('');
   const [className, setClassName] = useState('XI AKL 1');
-  const [formError, setFormError] = useState('');
+  const [formError, setFormError] = useState(sessionNotice || '');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [imgFailed, setImgFailed] = useState(false);
+
+  const [remoteLookup, setRemoteLookup] = useState<{
+    code: string;
+    exists: boolean;
+    isDisabled: boolean;
+    profile: StudentProfile | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (sessionNotice) {
+      setShowIdentityForm(true);
+      setFormError(sessionNotice);
+    }
+  }, [sessionNotice]);
 
   const activeSavedProfiles = useMemo(
     () =>
@@ -39,39 +56,88 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
       ),
     []
   );
-  const matchedProfile: StudentProfile | null = useMemo(() => {
-    if (!studentCode.trim()) return null;
-    return findProfileByCode(studentCode);
-  }, [studentCode]);
-  const isMatchedDisabled = useMemo(() => {
-    if (!studentCode.trim()) return false;
-    return isStudentCodeDisabled(studentCode);
+
+  // Debounced server lookup when student enters Kode Siswa (cross-device resume & disable check)
+  useEffect(() => {
+    const trimmed = studentCode.trim();
+    if (!trimmed) {
+      setRemoteLookup(null);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const res = await lookupStudentRemote(trimmed);
+      if (!cancelled) {
+        setRemoteLookup({
+          code: trimmed.toLowerCase(),
+          exists: res.exists,
+          isDisabled: res.isDisabled,
+          profile: res.profile
+        });
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [studentCode]);
 
-  const handleSelectSavedProfile = (profile: StudentProfile) => {
+  const matchedProfile: StudentProfile | null = useMemo(() => {
+    const trimmed = studentCode.trim();
+    if (!trimmed) return null;
+    if (remoteLookup && remoteLookup.code === trimmed.toLowerCase()) {
+      return remoteLookup.profile;
+    }
+    return findProfileByCode(trimmed);
+  }, [studentCode, remoteLookup]);
+
+  const isMatchedDisabled = useMemo(() => {
+    const trimmed = studentCode.trim();
+    if (!trimmed) return false;
+    if (remoteLookup && remoteLookup.code === trimmed.toLowerCase()) {
+      return remoteLookup.isDisabled;
+    }
+    return isStudentCodeDisabled(trimmed);
+  }, [studentCode, remoteLookup]);
+
+  const handleSelectSavedProfile = async (profile: StudentProfile) => {
     if (profile.isDisabled || isStudentCodeDisabled(profile.studentCode)) {
       setFormError(
         'Akun siswa ini telah dinonaktifkan oleh guru. Hubungi guru pengampu untuk mengaktifkan kembali.'
       );
       return;
     }
-    onEnterLms(
-      {
-        studentCode: profile.studentCode,
-        fullName: profile.fullName,
-        className: profile.className
-      },
-      'resume'
-    );
+    setFormError('');
+    setIsSubmitting(true);
+    try {
+      await onEnterLms(
+        {
+          studentCode: profile.studentCode,
+          fullName: profile.fullName,
+          className: profile.className
+        },
+        'resume'
+      );
+    } catch (err) {
+      setFormError(
+        err instanceof Error
+          ? err.message
+          : 'Akun tidak dapat masuk. Periksa status akun di guru pengampu.'
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!studentCode.trim()) {
       setFormError('Kode Siswa wajib diisi.');
       return;
     }
-    if (isStudentCodeDisabled(studentCode)) {
+    if (isMatchedDisabled) {
       setFormError(
         'Akun siswa dengan kode ini sedang dinonaktifkan oleh guru dan tidak dapat masuk sementara waktu.'
       );
@@ -87,14 +153,25 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
     }
 
     setFormError('');
-    onEnterLms(
-      {
-        studentCode: studentCode.trim(),
-        fullName: (fullName.trim() || matchedProfile?.fullName || '').trim(),
-        className: (className.trim() || matchedProfile?.className || '').trim()
-      },
-      matchedProfile ? 'resume' : 'new_or_update'
-    );
+    setIsSubmitting(true);
+    try {
+      await onEnterLms(
+        {
+          studentCode: studentCode.trim(),
+          fullName: (fullName.trim() || matchedProfile?.fullName || '').trim(),
+          className: (className.trim() || matchedProfile?.className || '').trim()
+        },
+        matchedProfile ? 'resume' : 'new_or_update'
+      );
+    } catch (err) {
+      setFormError(
+        err instanceof Error
+          ? err.message
+          : 'Gagal masuk ke e-learning. Pastikan koneksi server aktif.'
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -110,7 +187,7 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
             <span aria-hidden="true" className="text-slate-300">/</span>
             <span className="whitespace-nowrap shrink-0">MYOB Accounting v18</span>
             <span aria-hidden="true" className="text-slate-300">/</span>
-            <span className="whitespace-nowrap shrink-0">Mode Belajar Mandiri</span>
+            <span className="whitespace-nowrap shrink-0">Server Online Terpusat</span>
           </nav>
           <button
             type="button"
@@ -139,7 +216,8 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
               </p>
               <p className="mt-5 max-w-2xl text-base leading-relaxed text-slate-600">
                 Platform pembelajaran digital untuk mempelajari MYOB Accounting v18 secara mandiri
-                melalui materi, video tutorial, simulasi terpandu, dan evaluasi.
+                melalui materi, video tutorial, simulasi terpandu, dan evaluasi yang terhubung ke
+                server pembelajaran.
               </p>
 
               <div className="mt-8 flex flex-wrap items-center gap-4">
@@ -155,8 +233,9 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
                 {activeSavedProfiles.length > 0 && (
                   <button
                     type="button"
+                    disabled={isSubmitting}
                     onClick={() => handleSelectSavedProfile(activeSavedProfiles[0])}
-                    className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-5 py-3.5 text-sm font-semibold text-[#14263D] transition-colors hover:bg-slate-50"
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-5 py-3.5 text-sm font-semibold text-[#14263D] transition-colors hover:bg-slate-50 disabled:opacity-50"
                   >
                     <History className="h-4 w-4 text-[#19A89B]" />
                     <span>Lanjutkan sebagai {activeSavedProfiles[0].fullName}</span>
@@ -186,11 +265,10 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
                 <div>
                   <div className="flex items-center gap-2 text-sm font-bold text-[#14263D]">
                     <ClipboardCheck className="h-4 w-4 text-[#3569B0]" />
-                    <span>Evaluasi &amp; Pengumpulan</span>
+                    <span>Sinkronisasi Server</span>
                   </div>
                   <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                    Kuis evaluasi, Checkpoint praktik, serta ekspor berkas pengumpulan (.json) untuk
-                    dinilai guru.
+                    Progres belajar, kuis, dan checkpoint langsung tersimpan ke server untuk dinilai guru.
                   </p>
                 </div>
               </div>
@@ -230,7 +308,8 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
                     Identitas Siswa
                   </h2>
                   <p className="mt-1 text-sm text-slate-600">
-                    Masukkan data diri Anda untuk mencatat progres pembelajaran di browser ini.
+                    Masukkan kode siswa Anda untuk membuka atau melanjutkan progres belajar dari
+                    server.
                   </p>
                 </div>
                 <button
@@ -253,8 +332,9 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
                       <button
                         key={prof.studentCode}
                         type="button"
+                        disabled={isSubmitting}
                         onClick={() => handleSelectSavedProfile(prof)}
-                        className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-left transition-colors hover:border-[#3569B0] hover:bg-[#EAF3FF]/40"
+                        className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-left transition-colors hover:border-[#3569B0] hover:bg-[#EAF3FF]/40 disabled:opacity-50"
                       >
                         <div className="min-w-0">
                           <p className="truncate text-sm font-bold text-[#14263D]">
@@ -301,8 +381,8 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
                       <p className="font-bold">Akun Siswa Dinonaktifkan oleh Guru</p>
                       <p className="mt-0.5">
                         Kode siswa <span className="font-mono font-semibold">{studentCode}</span>{' '}
-                        sedang dinonaktifkan di perangkat ini. Hubungi guru pengampu untuk
-                        mengaktifkan kembali melalui Mode Guru.
+                        sedang dinonaktifkan oleh guru. Hubungi guru pengampu untuk mengaktifkan
+                        kembali melalui Mode Guru.
                       </p>
                     </div>
                   </div>
@@ -321,8 +401,9 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         type="button"
+                        disabled={isSubmitting}
                         onClick={() => handleSelectSavedProfile(matchedProfile)}
-                        className="rounded-lg bg-[#19A89B] px-4 py-2 text-xs font-semibold text-white hover:bg-[#148f84]"
+                        className="rounded-lg bg-[#19A89B] px-4 py-2 text-xs font-semibold text-white hover:bg-[#148f84] disabled:opacity-50"
                       >
                         Lanjutkan Progres Sebelumnya
                       </button>
@@ -373,18 +454,21 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
                 <div className="rounded-lg border border-slate-200 bg-[#F4F7FB] p-3.5 flex items-start gap-2.5 text-xs text-slate-600">
                   <Info className="h-4 w-4 shrink-0 text-[#3569B0] mt-0.5" />
                   <p>
-                    Data identitas dan progres belajar hanya disimpan secara lokal pada browser
-                    perangkat ini dan tidak otomatis tersinkron ke perangkat guru. Gunakan fitur
-                    Unduh Berkas Pengumpulan (.json) untuk mengumpulkan hasil belajar ke Mode Guru.
+                    Data identitas, progres belajar, jawaban kuis, dan simulasi otomatis
+                    tersinkron ke server Smart-Guide sehingga dapat dilanjutkan dari perangkat lain
+                    dan langsung terbaca oleh guru di Mode Guru.
                   </p>
                 </div>
 
                 <div className="pt-2">
                   <button
                     type="submit"
-                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#3569B0] px-6 py-3 text-sm font-bold text-white transition-colors hover:bg-[#2a548e]"
+                    disabled={isSubmitting}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#3569B0] px-6 py-3 text-sm font-bold text-white transition-colors hover:bg-[#2a548e] disabled:opacity-60"
                   >
-                    <span>MASUK KE E-LEARNING</span>
+                    <span>
+                      {isSubmitting ? 'MENGHUBUNGKAN KE SERVER...' : 'MASUK KE E-LEARNING'}
+                    </span>
                     <ArrowRight className="h-4 w-4" />
                   </button>
                 </div>
@@ -397,7 +481,7 @@ export function WelcomePage({ onEnterLms }: WelcomePageProps) {
       <footer className="border-t border-slate-200 bg-white py-4">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 text-xs text-slate-500">
           <span>Smart-Guide · Media Pembelajaran Komputer Akuntansi SMK Kelas XI AKL</span>
-          <span>Penyimpanan Lokal Browser · Tanpa Server Online</span>
+          <span>Server Online Terpusat · Akses Lintas Perangkat</span>
         </div>
       </footer>
     </div>
