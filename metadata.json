@@ -1,0 +1,6 @@
+{
+  "name": "MYOB Smart-Guide",
+  "description": "Platform pembelajaran digital interaktif MYOB Accounting v18 untuk siswa SMK Kelas XI Akuntansi dan Keuangan Lembaga (AKL).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
