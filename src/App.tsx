@@ -427,6 +427,7 @@ export default function App() {
           modules={modules}
           progress={progress}
           onSaveQuizResult={handleSaveQuizResult}
+          onFinishQuiz={() => setActivePage('modules')}
         />
       )}
 

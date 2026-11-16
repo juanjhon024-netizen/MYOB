@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Ban,
@@ -60,6 +60,9 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
     null
   );
 
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const isFetchingRef = useRef<boolean>(false);
+
   const availableEpisodes = useMemo(
     () =>
       modules.flatMap((mod) =>
@@ -71,11 +74,16 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
   );
 
   const reloadStudents = useCallback(
-    async (preferredCode?: string) => {
-      setIsLoadingServer(true);
+    async (preferredCode?: string, silent = false) => {
+      if (isFetchingRef.current) return;
+      isFetchingRef.current = true;
+      if (!silent) {
+        setIsLoadingServer(true);
+      }
       try {
         const next = await getAllStudentsForTeacherRemote();
         setStudents(next);
+        setLastSyncedAt(new Date().toISOString());
         if (preferredCode !== undefined) {
           setSelectedStudentCode(preferredCode);
         } else if (next.length === 0) {
@@ -88,22 +96,56 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
           );
         }
       } catch (err) {
-        setBanner({
-          type: 'error',
-          text:
-            err instanceof Error
-              ? err.message
-              : 'Gagal memuat daftar nilai siswa dari server.'
-        });
+        if (!silent) {
+          setBanner({
+            type: 'error',
+            text:
+              err instanceof Error
+                ? err.message
+                : 'Gagal memuat daftar nilai siswa dari server.'
+          });
+        }
       } finally {
-        setIsLoadingServer(false);
+        isFetchingRef.current = false;
+        if (!silent) {
+          setIsLoadingServer(false);
+        }
       }
     },
     []
   );
 
   useEffect(() => {
-    reloadStudents();
+    reloadStudents(undefined, false);
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        reloadStudents(undefined, true);
+      }
+    }, 5000);
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        reloadStudents(undefined, true);
+      }
+    };
+
+    const handleStorageUpdate = (e: StorageEvent) => {
+      if (!e.key || e.key.startsWith('smartguide_')) {
+        reloadStudents(undefined, true);
+      }
+    };
+
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('storage', handleStorageUpdate);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('storage', handleStorageUpdate);
+    };
   }, [reloadStudents]);
 
   const handleToggleDisableStudent = async (profile: StudentProfile) => {
@@ -356,7 +398,16 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
             </h2>
             <p className="mt-1 text-sm text-slate-600">
               Sistem menilai otomatis skor kuis, ketepatan kolom praktik simulasi, jumlah
-              kesalahan, serta penggunaan hint. Siswa tidak dapat melihat rincian nilai ini.
+              kesalahan, serta penggunaan hint. Nilai per sesi otomatis diperbarui setiap 5 detik.
+            </p>
+            <p className="mt-1.5 inline-flex items-center gap-1.5 text-xs font-medium text-[#19A89B] tabular-nums">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span>
+                Sinkron otomatis aktif
+                {lastSyncedAt
+                  ? ` · Terakhir diperbarui ${new Date(lastSyncedAt).toLocaleTimeString('id-ID')}`
+                  : ''}
+              </span>
             </p>
           </div>
 
@@ -804,6 +855,99 @@ export function TeacherGradingPanel({ modules }: TeacherGradingPanelProps) {
           </div>
 
           <div className="p-6 space-y-6">
+            {/* Per-Session Score Overview Table (Auto-Updated) */}
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="font-display text-base font-bold text-[#14263D]">
+                  Rekap Nilai Otomatis Per Sesi / Episode
+                </h4>
+                <span className="text-xs text-slate-500">
+                  Pilih sesi untuk melihat rincian jawaban di bawah
+                </span>
+              </div>
+              <div className="overflow-x-auto rounded-lg border border-slate-200">
+                <table className="w-full text-left text-xs">
+                  <thead className="border-b border-slate-200 bg-[#F4F7FB] font-semibold uppercase tracking-wider text-slate-600">
+                    <tr>
+                      <th className="px-4 py-2.5">Sesi / Episode</th>
+                      <th className="px-3 py-2.5 text-right">Nilai Kuis</th>
+                      <th className="px-3 py-2.5 text-right">Skor Praktik</th>
+                      <th className="px-3 py-2.5 text-right">Nilai Gabungan</th>
+                      <th className="px-3 py-2.5">Checkpoint</th>
+                      <th className="px-3 py-2.5 text-right">Salah / Hint</th>
+                      <th className="px-4 py-2.5 text-right">Rincian</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {availableEpisodes.map(({ module, episode }) => {
+                      const sessionGrade = computeEpisodeAutoGrade(
+                        module,
+                        episode,
+                        activeStudent.progress
+                      );
+                      const isSessionActive =
+                        episode.id === activeEpisodeItem.episode.id;
+                      return (
+                        <tr
+                          key={episode.id}
+                          className={
+                            isSessionActive
+                              ? 'bg-[#EAF3FF]/60'
+                              : 'hover:bg-slate-50/70'
+                          }
+                        >
+                          <td className="px-4 py-2.5">
+                            <p className="font-semibold text-[#14263D]">
+                              {module.code} · Ep. {episode.code}
+                            </p>
+                            <p className="text-[11px] text-slate-500">
+                              {episode.title}
+                            </p>
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono font-semibold text-[#14263D] tabular-nums">
+                            {sessionGrade.quizScore !== null
+                              ? sessionGrade.quizScore
+                              : '—'}
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono font-semibold text-[#14263D] tabular-nums">
+                            {sessionGrade.simScore !== null
+                              ? sessionGrade.simScore
+                              : '—'}
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono font-bold text-[#3569B0] tabular-nums">
+                            {sessionGrade.combinedScore !== null
+                              ? `${sessionGrade.combinedScore}/100`
+                              : '—'}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <CheckpointStatusText
+                              status={sessionGrade.checkpointStatus}
+                            />
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono text-slate-600 tabular-nums">
+                            {sessionGrade.totalErrors} / {sessionGrade.hintsUsed}
+                          </td>
+                          <td className="px-4 py-2.5 text-right">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedEpisodeId(episode.id)}
+                              className={`rounded-md px-2.5 py-1 text-[11px] font-semibold whitespace-nowrap ${
+                                isSessionActive
+                                  ? 'bg-[#14263D] text-white'
+                                  : 'border border-slate-300 bg-white text-[#3569B0] hover:bg-slate-50'
+                              }`}
+                            >
+                              {isSessionActive ? 'Dibuka' : 'Lihat'}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             {/* Score Breakdown Cards */}
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
               <div className="rounded-lg border border-slate-200 bg-[#F4F7FB] p-4">

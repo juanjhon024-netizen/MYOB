@@ -6,12 +6,14 @@ interface QuizPageProps {
   modules: ModuleData[];
   progress: StudentProgress;
   onSaveQuizResult: (episodeId: string, result: QuizAttemptRecord) => void;
+  onFinishQuiz?: () => void;
 }
 
 export function QuizPage({
   modules,
   progress,
-  onSaveQuizResult
+  onSaveQuizResult,
+  onFinishQuiz
 }: QuizPageProps) {
   const episodesWithQuiz = modules.flatMap((mod) =>
     mod.episodes
@@ -65,6 +67,7 @@ export function QuizPage({
           episode={activeItem.episode}
           existingResult={progress.quizResults[activeItem.episode.id]}
           onSaveResult={(res) => onSaveQuizResult(activeItem.episode.id, res)}
+          onFinish={onFinishQuiz}
         />
       ) : (
         <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600">

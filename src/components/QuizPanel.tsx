@@ -6,12 +6,14 @@ interface QuizPanelProps {
   episode: EpisodeContent;
   existingResult?: QuizAttemptRecord;
   onSaveResult: (result: QuizAttemptRecord) => void;
+  onFinish?: () => void;
 }
 
 export function QuizPanel({
   episode,
   existingResult,
-  onSaveResult
+  onSaveResult,
+  onFinish
 }: QuizPanelProps) {
   const questions = episode.quizQuestions;
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, number>>(
@@ -214,16 +216,28 @@ export function QuizPanel({
           )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {isSubmitted ? (
-            <button
-              type="button"
-              onClick={handleRetry}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-[#14263D] hover:bg-slate-50"
-            >
-              <RotateCcw className="h-4 w-4" />
-              <span>Ulangi Kuis</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={handleRetry}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-[#14263D] hover:bg-slate-50"
+              >
+                <RotateCcw className="h-4 w-4" />
+                <span>Ulangi Kuis</span>
+              </button>
+              {onFinish && (
+                <button
+                  type="button"
+                  onClick={onFinish}
+                  className="inline-flex items-center gap-2 rounded-lg bg-[#19A89B] px-6 py-2.5 text-sm font-semibold text-white hover:bg-[#148f84]"
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  <span>Selesai</span>
+                </button>
+              )}
+            </>
           ) : (
             <button
               type="button"

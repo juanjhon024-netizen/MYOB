@@ -59,6 +59,7 @@ async function requireTeacherPin(
 export function createApiApp(): express.Express {
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', 1);
 
   const jsonMedium = express.json({ limit: '25mb' });
   const jsonLarge = express.json({ limit: '100mb' });
@@ -238,7 +239,11 @@ export function createApiApp(): express.Express {
       if (rangeHeader && rangeHeader.startsWith('bytes=')) {
         const parts = rangeHeader.replace('bytes=', '').split('-');
         const start = Number.parseInt(parts[0] || '0', 10);
-        const end = parts[1] ? Number.parseInt(parts[1], 10) : total - 1;
+        const maxOpenRangeChunk = 2 * 1024 * 1024; // 2 MB chunk keeps 206 streams safe under Vercel 4.5 MB response limit
+        const requestedEnd = parts[1]
+          ? Number.parseInt(parts[1], 10)
+          : Math.min(total - 1, start + maxOpenRangeChunk - 1);
+        const end = Math.min(total - 1, requestedEnd);
 
         if (
           Number.isNaN(start) ||
@@ -658,6 +663,17 @@ export function createApiApp(): express.Express {
     }
     if (err instanceof DatabaseConfigError) {
       res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
+    const errObj = err as { status?: number; statusCode?: number; type?: string };
+    if (errObj?.type === 'entity.too.large' || errObj?.status === 413) {
+      res.status(413).json({
+        error: 'Ukuran data yang dikirim melebihi batas maksimal server.'
+      });
+      return;
+    }
+    if (errObj?.type === 'entity.parse.failed' || errObj?.status === 400) {
+      res.status(400).json({ error: 'Format payload JSON tidak valid.' });
       return;
     }
     console.error('API Error:', err);

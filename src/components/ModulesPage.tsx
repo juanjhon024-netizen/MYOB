@@ -25,7 +25,12 @@ export function ModulesPage({
   progress,
   onOpenEpisode
 }: ModulesPageProps) {
-  const [expandedModuleId, setExpandedModuleId] = useState<string>('modul-01');
+  const [expandedModuleId, setExpandedModuleId] = useState<string>(() => {
+    const found = modules.find((m) =>
+      m.episodes.some((e) => e.id === progress.lastOpenedEpisodeId)
+    );
+    return found?.id || modules[0]?.id || 'modul-01';
+  });
 
   return (
     <div className="space-y-6">

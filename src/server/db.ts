@@ -117,20 +117,25 @@ function getPgPool(): PgPoolType {
 
   if (!g.__smartGuidePgPool) {
     const rawSsl = (process.env.DATABASE_SSL || '').trim().toLowerCase();
+    const lowerUrl = connectionString.toLowerCase();
     const isLocalHost =
-      connectionString.includes('localhost') ||
-      connectionString.includes('127.0.0.1');
+      lowerUrl.includes('localhost') || lowerUrl.includes('127.0.0.1');
+    const urlDisablesSsl = lowerUrl.includes('sslmode=disable');
+
     const ssl =
-      rawSsl === 'false' || (rawSsl !== 'true' && isLocalHost)
+      rawSsl === 'false' || urlDisablesSsl || (rawSsl !== 'true' && isLocalHost)
         ? false
-        : { rejectUnauthorized: false };
+        : rawSsl === 'verify'
+          ? { rejectUnauthorized: true }
+          : { rejectUnauthorized: false };
 
     g.__smartGuidePgPool = new Pool({
       connectionString,
       ssl,
-      max: 5,
-      idleTimeoutMillis: 15000,
-      connectionTimeoutMillis: 10000
+      max: 3,
+      idleTimeoutMillis: 10000,
+      connectionTimeoutMillis: 10000,
+      allowExitOnIdle: true
     });
 
     g.__smartGuidePgPool.on('error', (err) => {

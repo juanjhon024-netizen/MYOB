@@ -486,6 +486,7 @@ export function EpisodePage({
             episode={episode}
             existingResult={quizRecord}
             onSaveResult={(res) => onSaveQuizResult(episode.id, res)}
+            onFinish={onBackToModules}
           />
 
           <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-700">
@@ -514,15 +515,25 @@ export function EpisodePage({
           <span>SEBELUMNYA</span>
         </button>
 
-        <button
-          type="button"
-          disabled={currentIdx === ACTIVITY_ORDER.length - 1}
-          onClick={handleNext}
-          className="inline-flex items-center gap-2 rounded-lg bg-[#3569B0] px-4 py-2.5 text-xs font-semibold text-white disabled:opacity-40 hover:bg-[#2a548e]"
-        >
-          <span>SELANJUTNYA</span>
-          <ArrowRight className="h-4 w-4" />
-        </button>
+        {currentIdx === ACTIVITY_ORDER.length - 1 ? (
+          <button
+            type="button"
+            onClick={onBackToModules}
+            className="inline-flex items-center gap-2 rounded-lg bg-[#19A89B] px-5 py-2.5 text-xs font-semibold text-white hover:bg-[#148f84]"
+          >
+            <CheckCircle2 className="h-4 w-4" />
+            <span>SELESAI</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={handleNext}
+            className="inline-flex items-center gap-2 rounded-lg bg-[#3569B0] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#2a548e]"
+          >
+            <span>SELANJUTNYA</span>
+            <ArrowRight className="h-4 w-4" />
+          </button>
+        )}
       </footer>
     </div>
   );
