@@ -138,6 +138,12 @@ export async function apiUploadMediaFile(
     body: file
   });
   if (!res.ok) {
+    if (res.status === 413) {
+      throw new ApiHttpError(
+        413,
+        'Ukuran file melebihi batas unggahan serverless Vercel (maksimal ~4,5 MB per unggahan). Kompres file atau gunakan file di bawah 4 MB.'
+      );
+    }
     throw new ApiHttpError(
       res.status,
       await parseErrorMessage(res, 'Gagal mengunggah file media ke server.')
@@ -205,6 +211,12 @@ export async function apiImportContentBackup(
     body: JSON.stringify(payload)
   });
   if (!res.ok) {
+    if (res.status === 413) {
+      throw new ApiHttpError(
+        413,
+        'Ukuran file cadangan melebihi batas payload serverless Vercel (~4,5 MB). Unggah materi secara bertahap per episode.'
+      );
+    }
     throw new ApiHttpError(
       res.status,
       await parseErrorMessage(res, 'Gagal mengimpor cadangan materi ke server.')

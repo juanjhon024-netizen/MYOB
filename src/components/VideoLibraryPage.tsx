@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Clock, ListOrdered, PlaySquare, CheckCircle2, AlertCircle } from 'lucide-react';
 import { EpisodeContent, ModuleData, StudentProgress } from '../types/lms';
 import { VideoPlayerBox } from './VideoPlayerBox';
-import { getMediaById } from '../services/contentDb';
+import { resolveMediaSource } from '../services/contentDb';
 
 interface VideoLibraryPageProps {
   modules: ModuleData[];
@@ -41,8 +41,13 @@ export function VideoLibraryPage({
       for (const item of videoItems) {
         let isAvail = false;
         if (item.episode.videoAttachmentId) {
-          const media = await getMediaById(item.episode.videoAttachmentId);
-          if (media) isAvail = true;
+          const media = await resolveMediaSource(item.episode.videoAttachmentId);
+          if (media) {
+            isAvail = true;
+            if (media.isObjectUrl) {
+              URL.revokeObjectURL(media.url);
+            }
+          }
         }
         if (!isAvail && item.episode.videoInfo?.localPath) {
           try {
